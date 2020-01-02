@@ -97,14 +97,14 @@ func RunServers(startWait, shutdownWait time.Duration) (err error) {
 	 */
 	for idx := range servers {
 		wg.Add(1)
-		info := &servers[idx]
-		go func() {
+		go func(i int) {
+			info := &servers[i]
 			err := info.server.Serve(info.listener)
 			if err != nil {
-				log.Printf("server %s serve error: %v", info.server.Name(), err)
+				log.Printf("server %d serve error: %v", i, err)
 			}
 			wg.Done()
-		}()
+		}(idx)
 	}
 	/*
 	 * prepare signal channel
@@ -147,14 +147,14 @@ func shutdownServers(wait time.Duration) {
 	 * call servers's shutdown, each in a goroutine
 	 */
 	for idx := range servers {
-		info := &servers[idx]
-		go func() {
+		go func(i int) {
+			info := &servers[i]
 			err := info.server.Shutdown(ctx)
 			if err != nil {
-				log.Printf("server %s shutdown error %v", info.server.Name(), err)
+				log.Printf("server %d shutdown error %v", i, err)
 			}
 			nch <- struct{}{}
-		}()
+		}(idx)
 	}
 	var cnt int
 	/*
