@@ -14,11 +14,11 @@ import (
 )
 
 func main() {
-	err := graceful.AddServer("tcp", ":9001", NewTestServer())
+	err := graceful.AddServer("tcp", "127.0.0.1:9999", graceful.NewControlServer())
 	if err != nil {
 		log.Fatalln(err)
 	}
-	err = graceful.AddServer("unix", "/tmp/test.sock", NewTestServer())
+	err = graceful.AddServer("tcp", ":9001", NewTestServer())
 	if err != nil {
 		log.Fatalln(err)
 	}

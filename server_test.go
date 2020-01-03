@@ -7,11 +7,11 @@ import (
 )
 
 func Test(t *testing.T) {
-	err := AddServer("tcp", ":9001", NewTestServer())
+	err := AddServer("tcp", "127.0.0.1:9999", NewControlServer())
 	if err != nil {
 		t.Error(err)
 	}
-	err = AddServer("unix", "/tmp/test.sock", NewTestServer())
+	err = AddServer("tcp", ":9001", NewTestServer())
 	if err != nil {
 		t.Error(err)
 	}
