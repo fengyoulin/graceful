@@ -3,6 +3,7 @@ package graceful
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"os"
@@ -136,19 +137,9 @@ func RunServers(startWait, shutdownWait time.Duration) (err error) {
 				shutdownServers(shutdownWait)
 				return
 			case cmdRestart:
-				err := startProcess(startWait, func() {
+				startProcess(startWait, func() {
 					cmdCh <- ctrlCmd{cmd: cmdShutdown}
-				})
-				/*
-				 * send the result to the caller, or print a log on error
-				 */
-				select {
-				case cmd.errCh <- err:
-				default:
-					if err != nil {
-						log.Printf("start process error: %v", err)
-					}
-				}
+				}, cmd.errCh)
 			}
 		}
 	}()
@@ -212,8 +203,22 @@ func shutdownServers(wait time.Duration) {
 	cancel()
 }
 
-func startProcess(wait time.Duration, fn func()) (err error) {
+func startProcess(wait time.Duration, fn func(), errCh chan error) {
 	files := make([]*os.File, len(servers))
+	var err error
+	/*
+	 * send the error to the caller, or print a log
+	 */
+	defer func() {
+		if err != nil {
+			err = fmt.Errorf("start process error: %v", err)
+			select {
+			case errCh <- err:
+			default:
+				log.Println(err)
+			}
+		}
+	}()
 	/*
 	 * convert net.Listener to *os.File
 	 */
@@ -247,13 +252,30 @@ func startProcess(wait time.Duration, fn func()) (err error) {
 		ch <- struct{}{}
 	}()
 	go func() {
+		var err error
+		/*
+		 * with new process exit until timeout
+		 */
 		select {
-		case <-ch:
-			log.Printf("process %d exited too quick", cmd.ProcessState.Pid())
 		case <-time.After(wait):
-			if fn != nil {
-				fn()
+		case <-ch:
+			err = fmt.Errorf("process %d exited too quick", cmd.ProcessState.Pid())
+		}
+		/*
+		 * send the result to the caller, or print a log on error
+		 */
+		select {
+		case errCh <- err:
+		default:
+			if err != nil {
+				log.Println(err)
 			}
+		}
+		/*
+		 * call the callback if no error
+		 */
+		if err == nil && fn != nil {
+			fn()
 		}
 	}()
 	return
