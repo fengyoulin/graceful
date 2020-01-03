@@ -20,6 +20,16 @@ type serverInfo struct {
 	listener net.Listener
 }
 
+type ctrlCmd struct {
+	cmd   int
+	errCh chan error
+}
+
+const (
+	cmdShutdown = iota
+	cmdRestart
+)
+
 var (
 	// ErrStarted means the servers already started
 	ErrStarted = errors.New("already started")
@@ -34,6 +44,8 @@ var (
 	started bool
 	lock    sync.Mutex
 )
+
+var cmdCh chan ctrlCmd
 
 // AddServer add a server
 func AddServer(network, address string, server Server) error {
@@ -106,29 +118,36 @@ func RunServers(startWait, shutdownWait time.Duration) (err error) {
 			wg.Done()
 		}(idx)
 	}
+	cmdCh = make(chan ctrlCmd)
 	/*
-	 * prepare signal channel
+	 * run the signal handler
 	 */
-	sch := make(chan os.Signal)
-	signal.Notify(sch, syscall.SIGHUP, syscall.SIGINT, syscall.SIGKILL)
+	runSignalHandler()
 	/*
-	 * run the signal handler routine
+	 * process control commands in a separate goroutine
 	 */
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		for {
-			sig := <-sch
-			switch sig {
-			case syscall.SIGINT, syscall.SIGKILL:
+			cmd := <-cmdCh
+			switch cmd.cmd {
+			case cmdShutdown:
 				shutdownServers(shutdownWait)
 				return
-			case syscall.SIGHUP:
+			case cmdRestart:
 				err := startProcess(startWait, func() {
-					sch <- syscall.SIGINT
+					cmdCh <- ctrlCmd{cmd: cmdShutdown}
 				})
-				if err != nil {
-					log.Printf("start process error: %v", err)
+				/*
+				 * send the result to the caller, or print a log on error
+				 */
+				select {
+				case cmd.errCh <- err:
+				default:
+					if err != nil {
+						log.Printf("start process error: %v", err)
+					}
 				}
 			}
 		}
@@ -138,6 +157,28 @@ func RunServers(startWait, shutdownWait time.Duration) (err error) {
 	 */
 	wg.Wait()
 	return
+}
+
+func runSignalHandler() {
+	/*
+	 * prepare signal channel
+	 */
+	sch := make(chan os.Signal)
+	signal.Notify(sch, syscall.SIGHUP, syscall.SIGINT, syscall.SIGKILL)
+	/*
+	 * run the signal handler routine
+	 */
+	go func() {
+		for {
+			sig := <-sch
+			switch sig {
+			case syscall.SIGINT, syscall.SIGKILL:
+				cmdCh <- ctrlCmd{cmd: cmdShutdown}
+			case syscall.SIGHUP:
+				cmdCh <- ctrlCmd{cmd: cmdRestart}
+			}
+		}
+	}()
 }
 
 func shutdownServers(wait time.Duration) {
@@ -174,7 +215,7 @@ func shutdownServers(wait time.Duration) {
 func startProcess(wait time.Duration, fn func()) (err error) {
 	files := make([]*os.File, len(servers))
 	/*
-	 * net.Listener to *os.File
+	 * convert net.Listener to *os.File
 	 */
 	for idx := range servers {
 		switch listener := servers[idx].listener.(type) {
@@ -189,6 +230,9 @@ func startProcess(wait time.Duration, fn func()) (err error) {
 			return
 		}
 	}
+	/*
+	 * start the new process with extra files
+	 */
 	var cmd *exec.Cmd
 	cmd, err = Start(files)
 	if err != nil {
