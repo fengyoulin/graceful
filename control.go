@@ -12,7 +12,8 @@ type controlServer struct {
 	server *http.Server
 }
 
-type cmdResponse struct {
+type commandResponse struct {
+	Ok  bool   `json:"ok,omitempty"`
 	Err string `json:"err,omitempty"`
 }
 
@@ -37,18 +38,25 @@ func NewControlServer() Server {
 				log.Printf("control server error: %v", err)
 			}
 		}()
-		var response cmdResponse
+
+		// process commands
+		var response commandResponse
 		switch request.RequestURI {
-		case "/stop":
-			cmdCh <- ctrlCmd{cmd: cmdShutdown}
+		case "/shutdown":
+			CommandCh <- CtrlCommand{Command: CommandShutdown}
 		case "/restart":
-			cmd := ctrlCmd{cmd: cmdRestart, errCh: make(chan error)}
-			cmdCh <- cmd
-			if e := <-cmd.errCh; e != nil {
+			cmd := CtrlCommand{Command: CommandRestart, ErrCh: make(chan error)}
+			CommandCh <- cmd
+			if e := <-cmd.ErrCh; e != nil {
 				response.Err = e.Error()
 			}
 		default:
 			response.Err = "unknown command"
+		}
+
+		// write result back
+		if len(response.Err) == 0 {
+			response.Ok = true
 		}
 		var data []byte
 		data, err = json.Marshal(response)
@@ -60,6 +68,7 @@ func NewControlServer() Server {
 		writer.WriteHeader(http.StatusOK)
 		_, err = writer.Write(data)
 	}
+
 	m := http.NewServeMux()
 	m.HandleFunc("/", h)
 	return &controlServer{

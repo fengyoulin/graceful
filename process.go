@@ -1,12 +1,14 @@
 package graceful
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 var (
@@ -35,37 +37,39 @@ func init() {
 	}
 }
 
-// Start a new process with extra files
-func Start(files []*os.File) (cmd *exec.Cmd, err error) {
-	oe := os.Environ()
+func startAndWait(files []*os.File, wait time.Duration) error {
+	env := os.Environ()
 	cnt := len(files)
-	env := make([]string, 0, len(oe)+cnt)
-	for _, v := range oe {
+	slc := make([]string, 0, len(env)+cnt)
+	for _, v := range env {
 		if !strings.HasPrefix(v, envKey) && !strings.HasPrefix(v, envFdsKey) {
-			env = append(env, v)
+			slc = append(slc, v)
 		}
 	}
 	if cnt > 0 {
-		env = append(env, envKey+"=true")
-		env = append(env, envFdsKey+"="+strconv.FormatInt(int64(cnt), 10))
+		slc = append(slc, envKey+"=true")
+		slc = append(slc, envFdsKey+"="+strconv.FormatInt(int64(cnt), 10))
 	}
 
-	cmd = exec.Command(os.Args[0], os.Args[1:]...)
+	cmd := exec.Command(os.Args[0], os.Args[1:]...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.Env = env
+	cmd.Env = slc
 	cmd.ExtraFiles = files
 
-	err = cmd.Start()
-	return
-}
+	err := cmd.Start()
+	if err != nil {
+		return err
+	}
 
-// IsGraceful just as its name
-func IsGraceful() bool {
-	return isGraceful
-}
-
-// GetInheritedFiles just as its name
-func GetInheritedFiles() []*os.File {
-	return inheritedFiles
+	ch := make(chan error)
+	go func() {
+		ch <- cmd.Wait()
+	}()
+	select {
+	case <-time.After(wait):
+	case <-ch:
+		err = fmt.Errorf("process %d exited within %v", cmd.ProcessState.Pid(), wait)
+	}
+	return err
 }

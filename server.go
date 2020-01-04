@@ -7,7 +7,6 @@ import (
 	"log"
 	"net"
 	"os"
-	"os/exec"
 	"os/signal"
 	"sync"
 	"syscall"
@@ -20,16 +19,6 @@ type serverInfo struct {
 	server   Server
 	listener net.Listener
 }
-
-type ctrlCmd struct {
-	cmd   int
-	errCh chan error
-}
-
-const (
-	cmdShutdown = iota
-	cmdRestart
-)
 
 var (
 	// ErrStarted means the servers already started
@@ -46,15 +35,12 @@ var (
 	lock    sync.Mutex
 )
 
-var cmdCh chan ctrlCmd
-
-// AddServer add a server
+// AddServer adds a server's info to the servers
 func AddServer(network, address string, server Server) error {
 	lock.Lock()
 	defer lock.Unlock()
-	/*
-	 * must not add a server after servers started
-	 */
+
+	// must not add a server after servers started
 	if started {
 		return ErrStarted
 	}
@@ -76,21 +62,19 @@ func AddServer(network, address string, server Server) error {
 	return nil
 }
 
-// RunServers run all servers added
+// RunServers runs all servers added in the global "servers"
 func RunServers(startWait, shutdownWait time.Duration) (err error) {
 	lock.Lock()
 	defer lock.Unlock()
 	started = true
-	/*
-	 * get listeners from inherited files or create them
-	 */
-	if IsGraceful() {
-		files := GetInheritedFiles()
-		if len(files) < len(servers) {
-			log.Fatalln("too few inherited files")
+
+	// get listeners from inherited files or create them
+	if isGraceful {
+		if len(inheritedFiles) < len(servers) {
+			return fmt.Errorf("inherited files not enough, need %d but got %d", len(servers), len(inheritedFiles))
 		}
 		for idx := range servers {
-			servers[idx].listener, err = net.FileListener(files[idx])
+			servers[idx].listener, err = net.FileListener(inheritedFiles[idx])
 			if err != nil {
 				return
 			}
@@ -105,9 +89,8 @@ func RunServers(startWait, shutdownWait time.Duration) (err error) {
 		}
 	}
 	var wg sync.WaitGroup
-	/*
-	 * run servers each in a goroutine
-	 */
+
+	// run servers each in a goroutine
 	for idx := range servers {
 		wg.Add(1)
 		go func(i int) {
@@ -119,65 +102,58 @@ func RunServers(startWait, shutdownWait time.Duration) (err error) {
 			wg.Done()
 		}(idx)
 	}
-	cmdCh = make(chan ctrlCmd)
-	/*
-	 * run the signal handler
-	 */
-	runSignalHandler()
-	/*
-	 * process control commands in a separate goroutine
-	 */
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for {
-			cmd := <-cmdCh
-			switch cmd.cmd {
-			case cmdShutdown:
-				shutdownServers(shutdownWait)
-				return
-			case cmdRestart:
-				startProcess(startWait, func() {
-					cmdCh <- ctrlCmd{cmd: cmdShutdown}
-				}, cmd.errCh)
-			}
-		}
-	}()
-	/*
-	 * wait until all finished
-	 */
-	wg.Wait()
-	return
-}
+	CommandCh = make(chan CtrlCommand)
 
-func runSignalHandler() {
-	/*
-	 * prepare signal channel
-	 */
+	// run the signal handler goroutine
 	sch := make(chan os.Signal)
 	signal.Notify(sch, syscall.SIGHUP, syscall.SIGINT, syscall.SIGKILL)
-	/*
-	 * run the signal handler routine
-	 */
 	go func() {
 		for {
 			sig := <-sch
 			switch sig {
 			case syscall.SIGINT, syscall.SIGKILL:
-				cmdCh <- ctrlCmd{cmd: cmdShutdown}
+				CommandCh <- CtrlCommand{Command: CommandShutdown}
 			case syscall.SIGHUP:
-				cmdCh <- ctrlCmd{cmd: cmdRestart}
+				CommandCh <- CtrlCommand{Command: CommandRestart}
 			}
 		}
 	}()
+
+	// process control commands in a separate goroutine
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			cmd := <-CommandCh
+			switch cmd.Command {
+			case CommandShutdown:
+				shutdownServers(shutdownWait)
+				return
+			case CommandRestart:
+				err := startProcess(startWait)
+				if err != nil {
+					if cmd.ErrCh != nil {
+						cmd.ErrCh <- err
+					}
+				} else {
+					go func() {
+						CommandCh <- CtrlCommand{Command: CommandShutdown}
+					}()
+				}
+			}
+		}
+	}()
+
+	// wait until all finished
+	wg.Wait()
+	return
 }
 
 func shutdownServers(wait time.Duration) {
 	ctx, cancel := context.WithTimeout(context.Background(), wait)
 	nch := make(chan struct{})
-	/*
-	 * call servers's shutdown, each in a goroutine
-	 */
+
+	// call servers's shutdown, each in a goroutine
 	for idx := range servers {
 		go func(i int) {
 			info := &servers[i]
@@ -189,9 +165,8 @@ func shutdownServers(wait time.Duration) {
 		}(idx)
 	}
 	var cnt int
-	/*
-	 * wait until all finished or timeout
-	 */
+
+	// wait until all finished or timeout
 	for cnt < len(servers) {
 		select {
 		case <-ctx.Done():
@@ -203,25 +178,9 @@ func shutdownServers(wait time.Duration) {
 	cancel()
 }
 
-func startProcess(wait time.Duration, fn func(), errCh chan error) {
+func startProcess(wait time.Duration) (err error) {
+	// convert net.Listener to *os.File
 	files := make([]*os.File, len(servers))
-	var err error
-	/*
-	 * send the error to the caller, or print a log
-	 */
-	defer func() {
-		if err != nil {
-			err = fmt.Errorf("start process error: %v", err)
-			select {
-			case errCh <- err:
-			default:
-				log.Println(err)
-			}
-		}
-	}()
-	/*
-	 * convert net.Listener to *os.File
-	 */
 	for idx := range servers {
 		switch listener := servers[idx].listener.(type) {
 		case *net.TCPListener:
@@ -235,48 +194,8 @@ func startProcess(wait time.Duration, fn func(), errCh chan error) {
 			return
 		}
 	}
-	/*
-	 * start the new process with extra files
-	 */
-	var cmd *exec.Cmd
-	cmd, err = Start(files)
-	if err != nil {
-		return
-	}
-	/*
-	 * confirm the new process alive after a moment
-	 */
-	ch := make(chan struct{})
-	go func() {
-		_ = cmd.Wait()
-		ch <- struct{}{}
-	}()
-	go func() {
-		var err error
-		/*
-		 * with new process exit until timeout
-		 */
-		select {
-		case <-time.After(wait):
-		case <-ch:
-			err = fmt.Errorf("process %d exited too quick", cmd.ProcessState.Pid())
-		}
-		/*
-		 * send the result to the caller, or print a log on error
-		 */
-		select {
-		case errCh <- err:
-		default:
-			if err != nil {
-				log.Println(err)
-			}
-		}
-		/*
-		 * call the callback if no error
-		 */
-		if err == nil && fn != nil {
-			fn()
-		}
-	}()
+
+	// start the new process with extra files
+	err = startAndWait(files, wait)
 	return
 }

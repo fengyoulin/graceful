@@ -42,3 +42,7 @@ func NewTestServer() graceful.Server {
 **Signals:**
 - Use `SIGINT` and `SIGKILL` to terminate the process.
 - Use `SIGHUP` to perform a graceful restart.
+
+**Easy Extend:**
+- Use the control server provided by `graceful.NewControlServer()`.
+- Use the command channel `CommandCh` in go code.
