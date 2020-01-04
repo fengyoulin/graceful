@@ -131,15 +131,16 @@ func RunServers(startWait, shutdownWait time.Duration) (err error) {
 				return
 			case CommandRestart:
 				err := startProcess(startWait)
-				if err != nil {
-					if cmd.ErrCh != nil {
-						cmd.ErrCh <- err
-					}
-				} else {
-					go func() {
-						CommandCh <- CtrlCommand{Command: CommandShutdown}
-					}()
+				if cmd.ErrCh != nil {
+					cmd.ErrCh <- err
 				}
+				if err != nil {
+					log.Printf("restart error: %v", err)
+					continue
+				}
+				go func() {
+					CommandCh <- CtrlCommand{Command: CommandShutdown}
+				}()
 			}
 		}
 	}()
