@@ -32,13 +32,17 @@ func runAsMaster(startDelay time.Duration) error {
 			}
 		}
 	}()
+	var count int
 	for start {
 		ts := time.Now()
 		if err := startWorker(); err != nil {
-			if time.Now().Sub(ts) < startDelay {
+			if time.Now().Sub(ts) < startDelay && count <= 0 {
 				return err
 			}
 			lg.Printf("start worker error: %v", err)
+			count++
+		} else {
+			count = 0
 		}
 	}
 	return nil
