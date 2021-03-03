@@ -1,14 +1,17 @@
 package graceful
 
 import (
-	"fmt"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
+	"syscall"
+)
+
+const (
+	envKeySuffix    = "_GRACEFUL"
+	envFdsKeySuffix = "_GRACEFUL_FDS"
 )
 
 var (
@@ -16,19 +19,20 @@ var (
 	envFdsKey      string
 	isGraceful     bool
 	inheritedFiles []*os.File
+	workerProcess  *os.Process
 )
 
 func init() {
 	base := strings.ToUpper(filepath.Base(os.Args[0]))
-	envKey = base + "_GRACEFUL"
-	envFdsKey = base + "_GRACEFUL_FDS"
+	envKey = base + envKeySuffix
+	envFdsKey = base + envFdsKeySuffix
 	if os.Getenv(envKey) == "true" {
 		isGraceful = true
 	}
 	if cntStr := os.Getenv(envFdsKey); cntStr != "" {
 		cnt, err := strconv.ParseInt(cntStr, 10, 64)
 		if err != nil {
-			log.Fatalf("invalid fds in env: %s", cntStr)
+			lg.Fatalf("invalid environment variable: %s=%s", envFdsKey, cntStr)
 		}
 		inheritedFiles = make([]*os.File, cnt)
 		for i := 0; i < int(cnt); i++ {
@@ -37,10 +41,10 @@ func init() {
 	}
 }
 
-func startAndWait(files []*os.File, wait time.Duration) error {
+func startAndWait(files []*os.File) error {
 	env := os.Environ()
 	cnt := len(files)
-	slc := make([]string, 0, len(env)+cnt)
+	slc := make([]string, 0, len(env)+2)
 	for _, v := range env {
 		if !strings.HasPrefix(v, envKey) && !strings.HasPrefix(v, envFdsKey) {
 			slc = append(slc, v)
@@ -62,14 +66,12 @@ func startAndWait(files []*os.File, wait time.Duration) error {
 		return err
 	}
 
-	ch := make(chan error)
-	go func() {
-		ch <- cmd.Wait()
-	}()
-	select {
-	case <-time.After(wait):
-	case <-ch:
-		err = fmt.Errorf("process %d exited within %v", cmd.ProcessState.Pid(), wait)
+	workerProcess = cmd.Process
+
+	if err = cmd.Wait(); err != nil {
+		if status, ok := cmd.ProcessState.Sys().(syscall.WaitStatus); ok && status.Signal() == sigWorkerQuit {
+			return nil
+		}
 	}
 	return err
 }

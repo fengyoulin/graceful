@@ -1,15 +1,10 @@
 package graceful
 
 import (
-	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net"
-	"os"
-	"os/signal"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -63,7 +58,7 @@ func AddServer(network, address string, server Server) error {
 }
 
 // RunServers runs all servers added in the global "servers"
-func RunServers(startWait, shutdownWait time.Duration) (err error) {
+func RunServers(startDelay, shutdownWait time.Duration) (err error) {
 	lock.Lock()
 	defer lock.Unlock()
 	started = true
@@ -79,6 +74,7 @@ func RunServers(startWait, shutdownWait time.Duration) (err error) {
 				return
 			}
 		}
+		runAsWorker(shutdownWait)
 	} else {
 		for idx := range servers {
 			info := &servers[idx]
@@ -87,116 +83,9 @@ func RunServers(startWait, shutdownWait time.Duration) (err error) {
 				return
 			}
 		}
-	}
-	var wg sync.WaitGroup
-
-	// run servers each in a goroutine
-	for idx := range servers {
-		wg.Add(1)
-		go func(i int) {
-			info := &servers[i]
-			err := info.server.Serve(info.listener)
-			if err != nil {
-				log.Printf("server %d serve error: %v", i, err)
-			}
-			wg.Done()
-		}(idx)
-	}
-	CommandCh = make(chan CtrlCommand)
-
-	// run the signal handler goroutine
-	sch := make(chan os.Signal)
-	signal.Notify(sch, syscall.SIGHUP, syscall.SIGINT, syscall.SIGKILL)
-	go func() {
-		for {
-			sig := <-sch
-			switch sig {
-			case syscall.SIGINT, syscall.SIGKILL:
-				CommandCh <- CtrlCommand{Command: CommandShutdown}
-			case syscall.SIGHUP:
-				CommandCh <- CtrlCommand{Command: CommandRestart}
-			}
-		}
-	}()
-
-	// process control commands in a separate goroutine
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for {
-			cmd := <-CommandCh
-			switch cmd.Command {
-			case CommandShutdown:
-				shutdownServers(shutdownWait)
-				return
-			case CommandRestart:
-				err := startProcess(startWait)
-				if cmd.ErrCh != nil {
-					cmd.ErrCh <- err
-				}
-				if err != nil {
-					log.Printf("restart error: %v", err)
-					continue
-				}
-				go func() {
-					CommandCh <- CtrlCommand{Command: CommandShutdown}
-				}()
-			}
-		}
-	}()
-
-	// wait until all finished
-	wg.Wait()
-	return
-}
-
-func shutdownServers(wait time.Duration) {
-	ctx, cancel := context.WithTimeout(context.Background(), wait)
-	nch := make(chan struct{})
-
-	// call servers's shutdown, each in a goroutine
-	for idx := range servers {
-		go func(i int) {
-			info := &servers[i]
-			err := info.server.Shutdown(ctx)
-			if err != nil {
-				log.Printf("server %d shutdown error %v", i, err)
-			}
-			nch <- struct{}{}
-		}(idx)
-	}
-	var cnt int
-
-	// wait until all finished or timeout
-	for cnt < len(servers) {
-		select {
-		case <-ctx.Done():
-			return
-		case <-nch:
-			cnt++
-		}
-	}
-	cancel()
-}
-
-func startProcess(wait time.Duration) (err error) {
-	// convert net.Listener to *os.File
-	files := make([]*os.File, len(servers))
-	for idx := range servers {
-		switch listener := servers[idx].listener.(type) {
-		case *net.TCPListener:
-			files[idx], err = listener.File()
-		case *net.UnixListener:
-			files[idx], err = listener.File()
-		default:
-			err = ErrUnsupported
-		}
-		if err != nil {
+		if err = runAsMaster(startDelay); err != nil {
 			return
 		}
 	}
-
-	// start the new process with extra files
-	err = startAndWait(files, wait)
 	return
 }
