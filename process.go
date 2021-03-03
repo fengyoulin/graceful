@@ -1,11 +1,13 @@
 package graceful
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 )
 
@@ -15,6 +17,7 @@ const (
 )
 
 var (
+	initiated      int64
 	envKey         string
 	envFdsKey      string
 	isGraceful     bool
@@ -22,7 +25,11 @@ var (
 	workerProcess  *os.Process
 )
 
-func init() {
+// Init ...
+func Init(logger Logger) error {
+	if !atomic.CompareAndSwapInt64(&initiated, 0, 1) {
+		return nil
+	}
 	base := strings.ToUpper(filepath.Base(os.Args[0]))
 	envKey = base + envKeySuffix
 	envFdsKey = base + envFdsKeySuffix
@@ -32,13 +39,18 @@ func init() {
 	if cntStr := os.Getenv(envFdsKey); cntStr != "" {
 		cnt, err := strconv.ParseInt(cntStr, 10, 64)
 		if err != nil {
-			lg.Fatalf("invalid environment variable: %s=%s", envFdsKey, cntStr)
+			return fmt.Errorf("invalid environment variable: %s=%s", envFdsKey, cntStr)
 		}
 		inheritedFiles = make([]*os.File, cnt)
 		for i := 0; i < int(cnt); i++ {
 			inheritedFiles[i] = os.NewFile(uintptr(3+i), "")
 		}
 	}
+	if lg = logger; lg != nil {
+		return nil
+	}
+	lg = defaultLogger()
+	return nil
 }
 
 func startAndWait(files []*os.File) error {

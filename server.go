@@ -59,6 +59,9 @@ func AddServer(network, address string, server Server) error {
 
 // RunServers runs all servers added in the global "servers"
 func RunServers(startDelay, shutdownWait time.Duration) (err error) {
+	if err = Init(nil); err != nil {
+		return
+	}
 	lock.Lock()
 	defer lock.Unlock()
 	started = true
