@@ -4,8 +4,8 @@ package graceful
 type CtrlCommand struct {
 	// Command currently can be one of CommandShutdown and CommandRestart
 	Command int
-	// ErrCh if not nil can be used to receive the error
-	ErrCh chan error
+	// ErrorChannel if not nil can be used to receive the error
+	ErrorChannel chan error
 }
 
 const (
@@ -15,5 +15,5 @@ const (
 	CommandRestart
 )
 
-// CommandCh is the "command channel"
-var CommandCh chan CtrlCommand
+// CommandChannel is the "command channel"
+var CommandChannel chan CtrlCommand

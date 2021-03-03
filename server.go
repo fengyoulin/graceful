@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"os"
 	"os/signal"
@@ -64,6 +63,9 @@ func AddServer(network, address string, server Server) error {
 
 // RunServers runs all servers added in the global "servers"
 func RunServers(startWait, shutdownWait time.Duration) (err error) {
+	if err = Init(nil); err != nil {
+		return
+	}
 	lock.Lock()
 	defer lock.Unlock()
 	started = true
@@ -97,24 +99,24 @@ func RunServers(startWait, shutdownWait time.Duration) (err error) {
 			info := &servers[i]
 			err := info.server.Serve(info.listener)
 			if err != nil {
-				log.Printf("server %d serve error: %v", i, err)
+				lg.Printf("server [%d] serve error: %v", i, err)
 			}
 			wg.Done()
 		}(idx)
 	}
-	CommandCh = make(chan CtrlCommand)
+	CommandChannel = make(chan CtrlCommand)
 
 	// run the signal handler goroutine
 	sch := make(chan os.Signal)
-	signal.Notify(sch, syscall.SIGHUP, syscall.SIGINT, syscall.SIGKILL)
+	signal.Notify(sch, syscall.SIGHUP, syscall.SIGINT)
 	go func() {
 		for {
 			sig := <-sch
 			switch sig {
-			case syscall.SIGINT, syscall.SIGKILL:
-				CommandCh <- CtrlCommand{Command: CommandShutdown}
+			case syscall.SIGINT:
+				CommandChannel <- CtrlCommand{Command: CommandShutdown}
 			case syscall.SIGHUP:
-				CommandCh <- CtrlCommand{Command: CommandRestart}
+				CommandChannel <- CtrlCommand{Command: CommandRestart}
 			}
 		}
 	}()
@@ -124,22 +126,22 @@ func RunServers(startWait, shutdownWait time.Duration) (err error) {
 	go func() {
 		defer wg.Done()
 		for {
-			cmd := <-CommandCh
+			cmd := <-CommandChannel
 			switch cmd.Command {
 			case CommandShutdown:
 				shutdownServers(shutdownWait)
 				return
 			case CommandRestart:
 				err := startProcess(startWait)
-				if cmd.ErrCh != nil {
-					cmd.ErrCh <- err
+				if cmd.ErrorChannel != nil {
+					cmd.ErrorChannel <- err
 				}
 				if err != nil {
-					log.Printf("restart error: %v", err)
+					lg.Printf("restart error: %v", err)
 					continue
 				}
 				go func() {
-					CommandCh <- CtrlCommand{Command: CommandShutdown}
+					CommandChannel <- CtrlCommand{Command: CommandShutdown}
 				}()
 			}
 		}
@@ -152,15 +154,16 @@ func RunServers(startWait, shutdownWait time.Duration) (err error) {
 
 func shutdownServers(wait time.Duration) {
 	ctx, cancel := context.WithTimeout(context.Background(), wait)
+	defer cancel()
 	nch := make(chan struct{})
 
-	// call servers's shutdown, each in a goroutine
+	// call each server's shutdown, each in a goroutine
 	for idx := range servers {
 		go func(i int) {
 			info := &servers[i]
 			err := info.server.Shutdown(ctx)
 			if err != nil {
-				log.Printf("server %d shutdown error %v", i, err)
+				lg.Printf("server [%d] shutdown error: %v", i, err)
 			}
 			nch <- struct{}{}
 		}(idx)
@@ -176,7 +179,6 @@ func shutdownServers(wait time.Duration) {
 			cnt++
 		}
 	}
-	cancel()
 }
 
 func startProcess(wait time.Duration) (err error) {

@@ -3,7 +3,6 @@ package graceful
 import (
 	"context"
 	"encoding/json"
-	"log"
 	"net"
 	"net/http"
 )
@@ -35,7 +34,7 @@ func NewControlServer() Server {
 		var err error
 		defer func() {
 			if err != nil {
-				log.Printf("control server error: %v", err)
+				lg.Printf("control server error: %v", err)
 			}
 		}()
 
@@ -43,11 +42,11 @@ func NewControlServer() Server {
 		var response commandResponse
 		switch request.RequestURI {
 		case "/shutdown":
-			CommandCh <- CtrlCommand{Command: CommandShutdown}
+			CommandChannel <- CtrlCommand{Command: CommandShutdown}
 		case "/restart":
-			cmd := CtrlCommand{Command: CommandRestart, ErrCh: make(chan error)}
-			CommandCh <- cmd
-			if e := <-cmd.ErrCh; e != nil {
+			cmd := CtrlCommand{Command: CommandRestart, ErrorChannel: make(chan error)}
+			CommandChannel <- cmd
+			if e := <-cmd.ErrorChannel; e != nil {
 				response.Err = e.Error()
 			}
 		default:
